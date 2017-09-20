@@ -1,0 +1,131 @@
+﻿#pragma kernel CreateWidth
+#define NUM_THREAD_X 16
+
+struct Vertex
+{
+	float3 position;
+	float2 uv;
+};
+
+struct Trail
+{
+	float startTime;
+	uint totalInputNum;
+};
+
+struct Node
+{
+	float3 position;
+	float time;
+};
+
+uint _TrailNum;
+uint _NodeNumPerTrail;
+uint _InputNodeNum;
+float _MinNodeDistance;
+float _Time;
+float _Life;
+float3 _CameraPos;
+float _StartWidth;
+float _EndWidth;
+
+int _InputNum;
+int _TotalInputIndex;
+uint _BufferSize;
+float _StartTime;
+
+StructuredBuffer<Node> _InputBuffer;
+RWStructuredBuffer<Node> _NodeBuffer;
+RWStructuredBuffer<Vertex> _VertexBuffer;
+
+uint CalcTrailIndex(uint nodeIndex)
+{
+	return nodeIndex / _NodeNumPerTrail;
+}
+
+uint CalcNodeIndex(uint trailIndex, uint nodeIndexInTrail)
+{
+	return (trailIndex * _NodeNumPerTrail) + (nodeIndexInTrail % _NodeNumPerTrail);
+}
+
+int GetInputBufferIndex(int index)
+{
+	int inputFirst = (_TotalInputIndex - _InputNum + 1) % _BufferSize;
+	int indexWithOffset = index + ((index < inputFirst) ? _BufferSize : 0);
+	return ((inputFirst <= indexWithOffset) && (indexWithOffset < (inputFirst + _InputNum))) ? indexWithOffset - inputFirst : -1;
+}
+
+Node GetNode(int index)
+{
+	int inputBufferIndex = GetInputBufferIndex(index);
+	if (inputBufferIndex >= 0)
+	{
+		return _InputBuffer[inputBufferIndex];
+	}
+
+	return _NodeBuffer[min(index, _TotalInputIndex)];
+}
+
+[numthreads(NUM_THREAD_X, 1, 1)]
+void CreateWidth (uint3 id : SV_DispatchThreadID)
+{
+	int index = id.x;
+	if (index < (int)_BufferSize)
+	{
+		int inputIndexLast = _TotalInputIndex % _BufferSize;
+		int inputBufferIndex = GetInputBufferIndex(index);
+		if (inputBufferIndex >= 0)
+		{
+			_NodeBuffer[index] = _InputBuffer[inputBufferIndex];
+		}
+
+		Vertex v0 = { float3(0, 0, 0), float2(-1, -1)};
+		Vertex v1 = { float3(0, 0, 0), float2(-1, -1)};
+
+		Node node = GetNode(index);
+		float3 position = node.position;
+
+		float3 dirPrev = float3(0, 0, 0);
+		float3 dirNext = float3(0, 0, 0);
+
+		if (index <= _TotalInputIndex)
+		{
+			int prevIndex = (index - 1 + _BufferSize) % _BufferSize;
+			bool prevEnable = index != inputIndexLast;
+			if (prevEnable)
+			{
+				Node nodePrev = GetNode(prevIndex);
+				dirPrev = normalize(position - nodePrev.position);
+			}
+
+			int nextIndex = (index + 1) % _BufferSize;
+			bool nextEnable = index != inputIndexLast;
+			if (nextEnable)
+			{
+				Node nodeNext = GetNode(nextIndex);
+				dirNext = normalize(nodeNext.position - position);
+			}
+		}
+
+		float life = min(_Life, _Time - _StartTime);
+		float rate = life <= 0 ? 1 : max(0, 1 - ((_Time - node.time) / life));
+
+		float3 dir = normalize(dirPrev + dirNext);
+
+		float3 toCameraDir = normalize(_CameraPos - position);
+		float3 right = normalize(cross(dir, toCameraDir)) * lerp(_EndWidth, _StartWidth, rate) * 0.5f;
+
+		v0.position = position - right;
+		v0.uv = float2(rate, 0);
+
+		v1.position = position + right;
+		v1.uv = float2(rate, 1);
+
+		int drawIndex = inputIndexLast - (int)index;
+		drawIndex = (drawIndex + _BufferSize) % _BufferSize;
+
+		uint vId = drawIndex * 2;
+		_VertexBuffer[vId] = v0;
+		_VertexBuffer[vId+1] = v1;
+	}
+}
